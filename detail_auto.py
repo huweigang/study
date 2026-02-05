@@ -56,8 +56,7 @@ class LianLianKanAutomator:
         print(f"保存目录: {self.save_dir}")
 
     def detect_grid_layout(self):
-        """检测连连看网格布局"""
-        # 方法1：通过点击多个位置来探测网格
+        """检测连连看网格布局（用于辅助定位红色块）"""
         self.grid_rows = 8  # 常见的连连看行数
         self.grid_cols = 10  # 常见的连连看列数
 
@@ -162,73 +161,99 @@ class LianLianKanAutomator:
 
         print("红色块点击完成")
 
-    def auto_match_and_remove(self, similarity_threshold=0.85):
+    def auto_match_and_remove(self,
+                              similarity_threshold: float = 0.85,
+                              min_threshold: float = 0.75,
+                              threshold_step: float = 0.05,
+                              max_rounds: int = 5):
         """
         自动找相同图片并点击消除
-        在 scan_all_grids / auto_red 扫描完成后调用
+        完成一次匹配后会根据剩余未匹配的记录降低阈值继续尝试
         """
-
         if len(self.records) < 2:
             print("记录不足，无法匹配")
             return
 
-        print("开始自动匹配可消除的牌...")
+        current_threshold = similarity_threshold
+        round_count = 0
 
-        used = set()
+        image_cache: Dict[int, Optional[np.ndarray]] = {}
+        for idx, record in enumerate(self.records):
+            if record.screenshot is not None:
+                image_cache[idx] = record.screenshot
+            elif record.screenshot_path and os.path.exists(record.screenshot_path):
+                image_cache[idx] = cv2.imread(record.screenshot_path)
+            else:
+                image_cache[idx] = None
 
-        for i in range(len(self.records)):
-            if i in used:
-                continue
+        while round_count < max_rounds and current_threshold >= min_threshold:
+            print(f"开始自动匹配可消除的牌... (阈值: {current_threshold:.2f})")
+            used_indices = set()
+            pairs = []
 
-            r1 = self.records[i]
-            if r1.screenshot is None:
-                continue
-
-            for j in range(i + 1, len(self.records)):
-                if j in used:
+            # 计算所有可能的相似对
+            for i in range(len(self.records)):
+                if i in used_indices:
+                    continue
+                img1 = image_cache.get(i)
+                if img1 is None:
                     continue
 
+                for j in range(i + 1, len(self.records)):
+                    if j in used_indices:
+                        continue
+                    img2 = image_cache.get(j)
+                    if img2 is None:
+                        continue
+
+                    sim = self.compare_images(img1, img2)
+                    if sim >= current_threshold:
+                        pairs.append((sim, i, j))
+
+            # 优先匹配高相似度
+            pairs.sort(key=lambda x: x[0], reverse=True)
+
+            matched_pairs = 0
+            for sim, i, j in pairs:
+                if i in used_indices or j in used_indices:
+                    continue
+                r1 = self.records[i]
                 r2 = self.records[j]
-                if r2.screenshot is None:
-                    continue
 
-                sim = self.compare_images(cv2.imread(r1.screenshot_path), cv2.imread(r2.screenshot_path))
+                print(
+                    f"找到可消除对: ({r1.grid_x},{r1.grid_y}) <-> "
+                    f"({r2.grid_x},{r2.grid_y}) 相似度:{sim:.2f}"
+                )
 
-                if sim >= similarity_threshold:
-                    print(f"找到可消除对: ({r1.grid_x},{r1.grid_y}) <-> ({r2.grid_x},{r2.grid_y}) 相似度:{sim:.2f}")
+                # 点击第一张
+                self.click_with_record(r1.x, r1.y, save_screenshot=False)
+                time.sleep(0.15)
 
-                    # 点击第一张
-                    self.click_with_record(r1.x, r1.y, save_screenshot=False)
-                    time.sleep(0.15)
+                # 点击第二张
+                self.click_with_record(r2.x, r2.y, save_screenshot=False)
+                time.sleep(0.3)
 
-                    # 点击第二张
-                    self.click_with_record(r2.x, r2.y, save_screenshot=False)
-                    time.sleep(0.3)
+                used_indices.add(i)
+                used_indices.add(j)
+                matched_pairs += 1
 
-                    used.add(i)
-                    used.add(j)
-                    break
+            if matched_pairs == 0:
+                print("本轮未找到可消除对，降低阈值继续尝试...")
+                current_threshold -= threshold_step
+            else:
+                # 移除已匹配的记录，避免重复匹配
+                self.records = [
+                    record for idx, record in enumerate(self.records)
+                    if idx not in used_indices
+                ]
+                print(f"本轮消除 {matched_pairs} 对，剩余记录数: {len(self.records)}")
 
-        print("自动消除完成")
+            round_count += 1
 
-    def get_grid_center(self, row: int, col: int) -> Tuple[int, int]:
-        """获取网格中心坐标"""
-        if self.grid_size is None:
-            self.detect_grid_layout()
-
-        grid_width, grid_height = self.grid_size
-        center_x = self.game_region[0] + col * grid_width + grid_width // 2
-        center_y = self.game_region[1] + row * grid_height + grid_height // 2
-
-        return (int(center_x), int(center_y))
-
-    def get_all_grid_centers(self) -> List[Tuple[int, int]]:
-        """获取所有网格中心坐标"""
-        centers = []
-        for row in range(self.grid_rows):
-            for col in range(self.grid_cols):
-                centers.append(self.get_grid_center(row, col))
-        return centers
+        if self.records:
+            print(f"自动消除完成，仍有 {len(self.records)} 条记录未匹配。")
+        else:
+            print("自动消除完成，所有记录均已匹配。")
 
     def take_screenshot(self, x: int, y: int,
                         size: Tuple[int, int] = (60, 60)) -> np.ndarray:
@@ -327,98 +352,6 @@ class LianLianKanAutomator:
         print(f"点击记录: 位置({x}, {y}), 网格({grid_x}, {grid_y}), 截图: {screenshot_path}")
 
         return record
-
-    def scan_all_grids(self):
-        """扫描所有网格位置"""
-        print("开始扫描所有网格...")
-
-        centers = self.get_all_grid_centers()
-        total = len(centers)
-
-        for i, (x, y) in enumerate(centers, 1):
-            if not self.is_running or self.is_paused:
-                break
-
-            print(f"扫描进度: {i}/{total} ({i / total * 100:.1f}%)")
-
-            # 点击并记录
-            self.click_with_record(x, y)
-
-            # 随机间隔，防止过快
-            time.sleep(random.uniform(0.2, 0.5))
-
-        print("扫描完成!")
-
-    def random_exploration(self, num_clicks: int = 50):
-        """随机探索点击"""
-        print(f"开始随机探索，计划点击 {num_clicks} 次...")
-
-        for i in range(num_clicks):
-            if not self.is_running or self.is_paused:
-                break
-
-            # 在游戏区域内随机选择位置
-            x = random.randint(
-                self.game_region[0] + 20,
-                self.game_region[0] + self.game_region[2] - 20
-            )
-            y = random.randint(
-                self.game_region[1] + 20,
-                self.game_region[1] + self.game_region[3] - 20
-            )
-
-            print(f"随机点击 {i + 1}/{num_clicks}: 位置({x}, {y})")
-            self.click_with_record(x, y)
-
-            # 随机间隔
-            time.sleep(random.uniform(0.3, 0.8))
-
-    def pattern_exploration(self, pattern: str = "row_by_row"):
-        """
-        按模式探索
-
-        Args:
-            pattern: 探索模式
-                - 'row_by_row': 逐行扫描
-                - 'col_by_col': 逐列扫描
-                - 'spiral': 螺旋扫描
-                - 'checkerboard': 跳棋模式
-        """
-        print(f"按 {pattern} 模式探索...")
-
-        centers = self.get_all_grid_centers()
-
-        if pattern == "row_by_row":
-            # 逐行扫描
-            pass  # get_all_grid_centers已经按行排序
-        elif pattern == "col_by_col":
-            # 逐列扫描
-            # 需要重新排序centers
-            sorted_centers = []
-            for col in range(self.grid_cols):
-                for row in range(self.grid_rows):
-                    sorted_centers.append(self.get_grid_center(row, col))
-            centers = sorted_centers
-        elif pattern == "checkerboard":
-            # 跳棋模式（先点奇数行奇数列，再点偶数行偶数列）
-            odd_centers = []
-            even_centers = []
-            for row in range(self.grid_rows):
-                for col in range(self.grid_cols):
-                    if (row + col) % 2 == 0:
-                        odd_centers.append(self.get_grid_center(row, col))
-                    else:
-                        even_centers.append(self.get_grid_center(row, col))
-            centers = odd_centers + even_centers
-
-        total = len(centers)
-        for i, (x, y) in enumerate(centers, 1):
-            if not self.is_running or self.is_paused:
-                break
-
-            print(f"模式探索进度: {i}/{total}")
-            self.click_with_record(x, y)
-            time.sleep(random.uniform(0.2, 0.4))
 
     def save_records(self):
         """保存所有记录到文件"""
@@ -703,7 +636,7 @@ class LianLianKanAutomator:
 
         return summary_path
 
-    def start_auto_explore(self, mode: str = "grid_scan", **kwargs):
+    def start_auto_explore(self, mode: str = "auto_red", **kwargs):
         """开始自动探索"""
         if self.is_running:
             print("已经在运行中")
@@ -720,14 +653,7 @@ class LianLianKanAutomator:
         threading.Thread(target=self.keyboard_listener, daemon=True).start()
 
         try:
-            if mode == "grid_scan":
-                self.detect_grid_layout()
-                self.scan_all_grids()
-            elif mode == "random":
-                self.random_exploration(kwargs.get('num_clicks', 50))
-            elif mode == "pattern":
-                self.pattern_exploration(kwargs.get('pattern', 'row_by_row'))
-            elif mode == "auto_red":
+            if mode == "auto_red":
                 self.auto_play_red_blocks()
             else:
                 print(f"未知模式: {mode}")
@@ -899,25 +825,12 @@ class LianLianKanGUI:
         self.mode_var = tk.StringVar(value="auto_red")
 
         modes = [
-            ("网格扫描", "grid_scan"),
-            ("随机探索", "random"),
-            ("逐行扫描", "pattern_row"),
-            ("跳棋模式", "pattern_checkerboard"),
             ("自动识别红色块", "auto_red")
         ]
 
         for i, (text, value) in enumerate(modes):
             tk.Radiobutton(mode_frame, text=text, variable=self.mode_var,
                            value=value).grid(row=i // 2, column=i % 2, sticky="w", padx=10, pady=2)
-
-        # 参数设置
-        param_frame = tk.LabelFrame(self.root, text="参数设置", padx=10, pady=10)
-        param_frame.pack(fill="x", padx=10, pady=5)
-
-        tk.Label(param_frame, text="点击次数:").grid(row=0, column=0, sticky="w")
-        self.clicks_entry = tk.Entry(param_frame, width=10)
-        self.clicks_entry.grid(row=0, column=1, padx=5)
-        self.clicks_entry.insert(0, "50")
 
         # 状态显示
         status_frame = tk.LabelFrame(self.root, text="状态", padx=10, pady=10)
@@ -995,16 +908,7 @@ class LianLianKanGUI:
     def run_automator(self, mode):
         """运行自动化器"""
         try:
-            if mode == "grid_scan":
-                self.automator.start_auto_explore("grid_scan")
-            elif mode == "random":
-                num_clicks = int(self.clicks_entry.get())
-                self.automator.start_auto_explore("random", num_clicks=num_clicks)
-            elif mode == "pattern_row":
-                self.automator.start_auto_explore("pattern", pattern="row_by_row")
-            elif mode == "pattern_checkerboard":
-                self.automator.start_auto_explore("pattern", pattern="checkerboard")
-            elif mode == "auto_red":
+            if mode == "auto_red":
                 self.automator.start_auto_explore("auto_red")
         except Exception as e:
             self.log_status(f"错误: {e}")
@@ -1087,10 +991,9 @@ def main():
     """主函数"""
     print("=== 连连看自动化工具 ===")
     print("功能说明:")
-    print("1. 自动点击连连看网格")
+    print("1. 自动识别并点击红色块")
     print("2. 记录每次点击后的图片")
-    print("3. 分析相同图片对")
-    print("4. 生成汇总报告")
+    print("3. 生成汇总报告")
     print()
 
     # 获取游戏区域
@@ -1113,36 +1016,7 @@ def main():
     # 创建自动化器
     automator = LianLianKanAutomator(game_region)
 
-    # 选择模式
-    print("\n请选择模式:")
-    print("1. 网格扫描 (逐格扫描所有位置)")
-    print("2. 随机探索 (随机点击)")
-    print("3. 模式探索 (按特定模式扫描)")
-
-    choice = input("请输入选择 (1/2/3): ").strip()
-
-    if choice == "1":
-        automator.start_auto_explore("grid_scan")
-    elif choice == "2":
-        num_clicks = int(input("请输入点击次数 (默认50): ") or "50")
-        automator.start_auto_explore("random", num_clicks=num_clicks)
-    elif choice == "3":
-        print("请选择模式:")
-        print("1. 逐行扫描")
-        print("2. 逐列扫描")
-        print("3. 跳棋模式")
-        pattern_choice = input("请输入选择 (1/2/3): ").strip()
-
-        if pattern_choice == "1":
-            automator.start_auto_explore("pattern", pattern="row_by_row")
-        elif pattern_choice == "2":
-            automator.start_auto_explore("pattern", pattern="col_by_col")
-        elif pattern_choice == "3":
-            automator.start_auto_explore("pattern", pattern="checkerboard")
-        else:
-            print("无效选择")
-    else:
-        print("无效选择")
+    automator.start_auto_explore("auto_red")
 
 
 if __name__ == "__main__":
