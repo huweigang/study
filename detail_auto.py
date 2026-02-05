@@ -44,6 +44,7 @@ class LianLianKanAutomator:
         self.grid_size = None  # 网格大小
         self.grid_rows = None  # 网格行数
         self.grid_cols = None  # 网格列数
+        self.hotkey_ids = []
 
         # 创建保存目录
         os.makedirs(self.save_dir, exist_ok=True)
@@ -177,16 +178,19 @@ class LianLianKanAutomator:
         current_threshold = similarity_threshold
         round_count = 0
 
-        image_cache: Dict[int, Optional[np.ndarray]] = {}
-        for idx, record in enumerate(self.records):
-            if record.screenshot is not None:
-                image_cache[idx] = record.screenshot
-            elif record.screenshot_path and os.path.exists(record.screenshot_path):
-                image_cache[idx] = cv2.imread(record.screenshot_path)
-            else:
-                image_cache[idx] = None
-
         while round_count < max_rounds and current_threshold >= min_threshold:
+            if len(self.records) < 2:
+                break
+
+            image_cache: Dict[int, Optional[np.ndarray]] = {}
+            for idx, record in enumerate(self.records):
+                if record.screenshot is not None:
+                    image_cache[idx] = record.screenshot
+                elif record.screenshot_path and os.path.exists(record.screenshot_path):
+                    image_cache[idx] = cv2.imread(record.screenshot_path)
+                else:
+                    image_cache[idx] = None
+
             print(f"开始自动匹配可消除的牌... (阈值: {current_threshold:.2f})")
             used_indices = set()
             pairs = []
@@ -238,6 +242,8 @@ class LianLianKanAutomator:
                 matched_pairs += 1
 
             if matched_pairs == 0:
+                if len(self.records) < 2:
+                    break
                 print("本轮未找到可消除对，降低阈值继续尝试...")
                 current_threshold -= threshold_step
             else:
@@ -251,7 +257,10 @@ class LianLianKanAutomator:
             round_count += 1
 
         if self.records:
-            print(f"自动消除完成，仍有 {len(self.records)} 条记录未匹配。")
+            if len(self.records) < 2:
+                print(f"自动消除完成，剩余 {len(self.records)} 条记录无法匹配。")
+            else:
+                print(f"自动消除完成，仍有 {len(self.records)} 条记录未匹配。")
         else:
             print("自动消除完成，所有记录均已匹配。")
 
@@ -649,7 +658,9 @@ class LianLianKanAutomator:
         print("按 ESC 键停止")
         print("按 SPACE 键暂停/继续")
 
-        # 启动键盘监听
+        self.setup_hotkeys()
+
+        # 启动键盘监听（备用）
         threading.Thread(target=self.keyboard_listener, daemon=True).start()
 
         try:
@@ -677,6 +688,23 @@ class LianLianKanAutomator:
                 time.sleep(0.5)  # 防抖
             time.sleep(0.1)
 
+    def setup_hotkeys(self):
+        """设置热键"""
+        try:
+            self.hotkey_ids.append(keyboard.add_hotkey('esc', self.stop))
+            self.hotkey_ids.append(keyboard.add_hotkey('space', self.toggle_pause))
+        except Exception as e:
+            print(f"热键注册失败，使用轮询监听: {e}")
+
+    def clear_hotkeys(self):
+        """清理热键"""
+        for hotkey_id in self.hotkey_ids:
+            try:
+                keyboard.remove_hotkey(hotkey_id)
+            except Exception:
+                pass
+        self.hotkey_ids = []
+
     def toggle_pause(self):
         """切换暂停状态"""
         self.is_paused = not self.is_paused
@@ -687,6 +715,7 @@ class LianLianKanAutomator:
         """停止程序"""
         self.is_running = False
         print("程序已停止")
+        self.clear_hotkeys()
 
         # 保存记录
         if self.records:
@@ -838,6 +867,8 @@ class LianLianKanGUI:
 
         self.status_text = tk.Text(status_frame, height=6, width=50)
         self.status_text.pack()
+        self.root.bind("<Escape>", lambda event: self.stop_scan())
+        self.root.bind("<space>", lambda event: self.pause_scan())
 
         # 操作历史
         history_frame = tk.Frame(self.root)
