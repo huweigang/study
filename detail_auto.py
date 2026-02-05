@@ -579,20 +579,57 @@ class LianLianKanAutomator:
         if img1 is None or img2 is None:
             return 0.0
 
-        # 方法1：直方图比较
-        img1_gray = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-        img2_gray = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+        # 统一尺寸，减少局部噪声影响
+        img1_resized = cv2.resize(img1, (96, 96), interpolation=cv2.INTER_AREA)
+        img2_resized = cv2.resize(img2, (96, 96), interpolation=cv2.INTER_AREA)
 
-        hist1 = cv2.calcHist([img1_gray], [0], None, [256], [0, 256])
-        hist2 = cv2.calcHist([img2_gray], [0], None, [256], [0, 256])
+        # 方法1：感知哈希 (pHash)
+        phash_similarity = self.phash_similarity(img1_resized, img2_resized)
 
-        # 归一化
+        # 方法2：颜色直方图（HSV）比较
+        hist_similarity = self.color_hist_similarity(img1_resized, img2_resized)
+
+        # 加权融合
+        similarity = 0.65 * phash_similarity + 0.35 * hist_similarity
+
+        return float(max(0.0, min(1.0, similarity)))
+
+    def phash_similarity(self, img1: np.ndarray, img2: np.ndarray) -> float:
+        """基于感知哈希的相似度"""
+        hash1 = self.compute_phash(img1)
+        hash2 = self.compute_phash(img2)
+        if hash1 is None or hash2 is None:
+            return 0.0
+
+        distance = np.count_nonzero(hash1 != hash2)
+        return 1.0 - (distance / hash1.size)
+
+    def compute_phash(self, img: np.ndarray) -> Optional[np.ndarray]:
+        """计算感知哈希 (pHash)"""
+        if img is None:
+            return None
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        resized = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
+        resized = np.float32(resized)
+        dct = cv2.dct(resized)
+        dct_low = dct[:8, :8]
+        median = np.median(dct_low)
+        return dct_low > median
+
+    def color_hist_similarity(self, img1: np.ndarray, img2: np.ndarray) -> float:
+        """基于HSV颜色直方图的相似度"""
+        hsv1 = cv2.cvtColor(img1, cv2.COLOR_BGR2HSV)
+        hsv2 = cv2.cvtColor(img2, cv2.COLOR_BGR2HSV)
+
+        hist1 = cv2.calcHist([hsv1], [0, 1], None, [32, 32], [0, 180, 0, 256])
+        hist2 = cv2.calcHist([hsv2], [0, 1], None, [32, 32], [0, 180, 0, 256])
+
         cv2.normalize(hist1, hist1, 0, 1, cv2.NORM_MINMAX)
         cv2.normalize(hist2, hist2, 0, 1, cv2.NORM_MINMAX)
 
         similarity = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
-
-        return max(0.0, similarity)  # 确保非负
+        return max(0.0, float(similarity))
 
     def create_summary_image(self):
         """创建所有截图的汇总图片，按照原始网格位置排列"""
