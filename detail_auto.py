@@ -230,11 +230,11 @@ class LianLianKanAutomator:
                 )
 
                 # 点击第一张
-                self.click_with_record(r1.x, r1.y, save_screenshot=False)
+                self.click_with_record(r1.x, r1.y, save_screenshot=False, record_click=False)
                 time.sleep(0.15)
 
                 # 点击第二张
-                self.click_with_record(r2.x, r2.y, save_screenshot=False)
+                self.click_with_record(r2.x, r2.y, save_screenshot=False, record_click=False)
                 time.sleep(0.3)
 
                 used_indices.add(i)
@@ -304,13 +304,15 @@ class LianLianKanAutomator:
         return filepath
 
     def click_with_record(self, x: int, y: int,
-                          save_screenshot: bool = True) -> ClickRecord:
+                          save_screenshot: bool = True,
+                          record_click: bool = True) -> Optional[ClickRecord]:
         """
         点击并记录，确保截图位置精确对应
 
         Args:
             x, y: 点击坐标
             save_screenshot: 是否保存截图
+            record_click: 是否记录本次点击
         """
         # 添加随机偏移，使其更自然
         offset_x = random.randint(-2, 2)
@@ -330,6 +332,9 @@ class LianLianKanAutomator:
 
         # 等待图片显示（连连看通常需要一点时间显示图片）
         time.sleep(0.3)
+
+        if not record_click:
+            return None
 
         # 截取点击后的图片 - 使用原始坐标，确保位置精确对应
         screenshot = None
