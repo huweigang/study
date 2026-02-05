@@ -44,6 +44,8 @@ class LianLianKanAutomator:
         self.grid_size = None  # 网格大小
         self.grid_rows = None  # 网格行数
         self.grid_cols = None  # 网格列数
+        self.enable_auto_match = False
+        self.stop_event = threading.Event()
 
         # 创建保存目录
         os.makedirs(self.save_dir, exist_ok=True)
@@ -147,7 +149,9 @@ class LianLianKanAutomator:
         red_blocks.sort(key=lambda x: x['area'], reverse=True)
 
         for i, block in enumerate(red_blocks):
-            if not self.is_running or self.is_paused:
+            if (not self.is_running
+                    or self.is_paused
+                    or self.stop_event.is_set()):
                 break
 
             print(f"点击第 {i+1}/{len(red_blocks)} 个红色块: {block['abs_position']}")
@@ -644,12 +648,19 @@ class LianLianKanAutomator:
 
         self.is_running = True
         self.is_paused = False
+        self.stop_event.clear()
+        self.enable_auto_match = mode == "auto_match"
 
         print("开始自动探索...")
         print("按 ESC 键停止")
         print("按 SPACE 键暂停/继续")
 
         # 启动键盘监听
+        try:
+            keyboard.add_hotkey('esc', self.stop)
+            keyboard.add_hotkey('space', self.toggle_pause)
+        except Exception as exc:
+            print(f"键盘监听初始化失败: {exc} (请以管理员权限运行或使用GUI快捷键)")
         threading.Thread(target=self.keyboard_listener, daemon=True).start()
 
         try:
@@ -667,14 +678,7 @@ class LianLianKanAutomator:
 
     def keyboard_listener(self):
         """键盘监听器"""
-        while self.is_running:
-            if keyboard.is_pressed('esc'):  # ESC键停止
-                print("检测到ESC键，正在停止...")
-                self.stop()
-                break
-            elif keyboard.is_pressed('space'):  # 空格键暂停/继续
-                self.toggle_pause()
-                time.sleep(0.5)  # 防抖
+        while self.is_running and not self.stop_event.is_set():
             time.sleep(0.1)
 
     def toggle_pause(self):
@@ -685,14 +689,22 @@ class LianLianKanAutomator:
 
     def stop(self):
         """停止程序"""
+        if not self.is_running:
+            return
         self.is_running = False
+        self.stop_event.set()
+        try:
+            keyboard.clear_all_hotkeys()
+        except Exception:
+            pass
         print("程序已停止")
 
         # 保存记录
         if self.records:
             self.save_records()
             self.create_summary_image()
-            self.auto_match_and_remove()
+            if self.enable_auto_match:
+                self.auto_match_and_remove()
             print(f"共记录了 {len(self.records)} 次点击")
 
     def draw_game_region_boundary(self):
@@ -781,6 +793,8 @@ class LianLianKanGUI:
 
         self.automator = None
         self.game_region = None
+        self.root.bind("<Escape>", lambda event: self.stop_scan())
+        self.root.bind("<space>", lambda event: self.pause_scan())
 
         self.setup_ui()
 
