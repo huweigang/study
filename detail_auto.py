@@ -24,6 +24,8 @@ class ClickRecord:
     screenshot_path: Optional[str] = None
     grid_x: Optional[int] = None  # 网格X坐标
     grid_y: Optional[int] = None  # 网格Y坐标
+    removed: bool = False
+    removed_at: Optional[float] = None
 
 
 class LianLianKanAutomator:
@@ -46,6 +48,7 @@ class LianLianKanAutomator:
         self.grid_cols = None  # 网格列数
         self.hotkey_ids = []
         self._finalized = False
+        self.removed_pairs: List[Dict] = []
 
         # 创建保存目录
         os.makedirs(self.save_dir, exist_ok=True)
@@ -176,7 +179,8 @@ class LianLianKanAutomator:
         自动找相同图片并点击消除
         完成一次匹配后会根据剩余未匹配的记录降低阈值继续尝试
         """
-        if len(self.records) < 2:
+        active_records = [r for r in self.records if not r.removed]
+        if len(active_records) < 2:
             print("记录不足，无法匹配")
             return
 
@@ -184,11 +188,13 @@ class LianLianKanAutomator:
         round_count = 0
 
         while round_count < max_rounds and current_threshold >= min_threshold:
-            if len(self.records) < 2:
+            active_indices = [idx for idx, record in enumerate(self.records) if not record.removed]
+            if len(active_indices) < 2:
                 break
 
             image_cache: Dict[int, Optional[np.ndarray]] = {}
-            for idx, record in enumerate(self.records):
+            for idx in active_indices:
+                record = self.records[idx]
                 if refresh_current_screen:
                     refreshed = self.take_screenshot(record.x, record.y, (80, 80))
                     image_cache[idx] = refreshed
@@ -204,14 +210,14 @@ class LianLianKanAutomator:
             pairs = []
 
             # 计算所有可能的相似对
-            for i in range(len(self.records)):
+            for i_pos, i in enumerate(active_indices):
                 if i in used_indices:
                     continue
                 img1 = image_cache.get(i)
                 if img1 is None:
                     continue
 
-                for j in range(i + 1, len(self.records)):
+                for j in active_indices[i_pos + 1:]:
                     if j in used_indices:
                         continue
                     img2 = image_cache.get(j)
@@ -264,6 +270,17 @@ class LianLianKanAutomator:
                     )
 
                 if removal_confirmed:
+                    removed_at = time.time()
+                    self.records[i].removed = True
+                    self.records[i].removed_at = removed_at
+                    self.records[j].removed = True
+                    self.records[j].removed_at = removed_at
+                    self.removed_pairs.append({
+                        'removed_at': removed_at,
+                        'pos1': (r1.grid_x, r1.grid_y),
+                        'pos2': (r2.grid_x, r2.grid_y),
+                        'similarity': sim,
+                    })
                     used_indices.add(i)
                     used_indices.add(j)
                     matched_pairs += 1
@@ -271,28 +288,26 @@ class LianLianKanAutomator:
                     print("消除校验失败，保留记录以便后续匹配。")
 
             if matched_pairs == 0:
-                if len(self.records) < 2:
+                remaining_count = sum(1 for record in self.records if not record.removed)
+                if remaining_count < 2:
                     break
                 print("本轮未找到可消除对，降低阈值继续尝试...")
                 current_threshold -= threshold_step
             else:
-                # 移除已匹配的记录，避免重复匹配
-                self.records = [
-                    record for idx, record in enumerate(self.records)
-                    if idx not in used_indices
-                ]
-                print(f"本轮消除 {matched_pairs} 对，剩余记录数: {len(self.records)}")
-                if relax_after_match and self.records and current_threshold > min_threshold:
+                remaining_count = sum(1 for record in self.records if not record.removed)
+                print(f"本轮确认消除 {matched_pairs} 对，剩余未消除记录数: {remaining_count}")
+                if relax_after_match and remaining_count > 0 and current_threshold > min_threshold:
                     current_threshold = max(min_threshold, current_threshold - threshold_step)
                     print(f"匹配后继续放宽阈值: {current_threshold:.2f}")
 
             round_count += 1
 
-        if self.records:
-            if len(self.records) < 2:
-                print(f"自动消除完成，剩余 {len(self.records)} 条记录无法匹配。")
+        remaining_count = sum(1 for record in self.records if not record.removed)
+        if remaining_count:
+            if remaining_count < 2:
+                print(f"自动消除完成，剩余 {remaining_count} 条记录无法匹配。")
             else:
-                print(f"自动消除完成，仍有 {len(self.records)} 条记录未匹配。")
+                print(f"自动消除完成，仍有 {remaining_count} 条记录未匹配。")
         else:
             print("自动消除完成，所有记录均已匹配。")
 
@@ -414,7 +429,9 @@ class LianLianKanAutomator:
                 'y': record.y,
                 'screenshot_path': record.screenshot_path,
                 'grid_x': record.grid_x,
-                'grid_y': record.grid_y
+                'grid_y': record.grid_y,
+                'removed': record.removed,
+                'removed_at': record.removed_at,
             })
 
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -424,6 +441,9 @@ class LianLianKanAutomator:
                 'grid_rows': self.grid_rows,
                 'grid_cols': self.grid_cols,
                 'total_clicks': len(self.records),
+                'removed_clicks': sum(1 for r in self.records if r.removed),
+                'active_clicks': sum(1 for r in self.records if not r.removed),
+                'removed_pairs': self.removed_pairs,
                 'records': serializable_records
             }, f, indent=2, ensure_ascii=False)
 
@@ -454,9 +474,13 @@ class LianLianKanAutomator:
                 screenshot=screenshot,
                 screenshot_path=record_data['screenshot_path'],
                 grid_x=record_data['grid_x'],
-                grid_y=record_data['grid_y']
+                grid_y=record_data['grid_y'],
+                removed=record_data.get('removed', False),
+                removed_at=record_data.get('removed_at'),
             )
             self.records.append(record)
+
+        self.removed_pairs = data.get('removed_pairs', [])
 
         print(f"已加载 {len(self.records)} 条记录")
 
@@ -885,10 +909,11 @@ class LianLianKanAutomator:
 
         # 保存记录
         if self.records:
-            self.save_records()
             self.create_summary_image()
             self.auto_match_and_remove()
-            print(f"共记录了 {len(self.records)} 次点击")
+            self.save_records()
+            removed_count = sum(1 for record in self.records if record.removed)
+            print(f"共记录了 {len(self.records)} 次点击，其中确认消除 {removed_count} 次")
 
     def draw_game_region_boundary(self):
         """绘制游戏区域边界框，使用Canvas创建边框"""
