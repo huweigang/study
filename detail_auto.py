@@ -166,7 +166,9 @@ class LianLianKanAutomator:
                               similarity_threshold: float = 0.85,
                               min_threshold: float = 0.75,
                               threshold_step: float = 0.05,
-                              max_rounds: int = 5):
+                              max_rounds: int = 5,
+                              removal_similarity_threshold: float = 0.6,
+                              removal_check_delay: float = 0.35):
         """
         自动找相同图片并点击消除
         完成一次匹配后会根据剩余未匹配的记录降低阈值继续尝试
@@ -230,16 +232,38 @@ class LianLianKanAutomator:
                 )
 
                 # 点击第一张
-                self.click_with_record(r1.x, r1.y, save_screenshot=False)
+                self.click_with_record(r1.x, r1.y, save_screenshot=False, record_click=False)
                 time.sleep(0.15)
 
                 # 点击第二张
-                self.click_with_record(r2.x, r2.y, save_screenshot=False)
-                time.sleep(0.3)
+                self.click_with_record(r2.x, r2.y, save_screenshot=False, record_click=False)
+                time.sleep(removal_check_delay)
 
-                used_indices.add(i)
-                used_indices.add(j)
-                matched_pairs += 1
+                # 验证是否真的消除：比较点击前后截图相似度
+                before_img1 = image_cache.get(i)
+                before_img2 = image_cache.get(j)
+                after_img1 = self.take_screenshot(r1.x, r1.y, (80, 80))
+                after_img2 = self.take_screenshot(r2.x, r2.y, (80, 80))
+
+                removed1 = False
+                removed2 = False
+                if before_img1 is not None:
+                    removed1 = self.compare_images(before_img1, after_img1) < removal_similarity_threshold
+                if before_img2 is not None:
+                    removed2 = self.compare_images(before_img2, after_img2) < removal_similarity_threshold
+
+                if removed1 and removed2:
+                    used_indices.add(i)
+                    used_indices.add(j)
+                    matched_pairs += 1
+                    print("已确认消除成功。")
+                else:
+                    # 未成功消除则保留记录，并更新截图以保持当前状态
+                    if not removed1:
+                        r1.screenshot = after_img1
+                    if not removed2:
+                        r2.screenshot = after_img2
+                    print("消除未确认成功，保留记录以便后续匹配。")
 
             if matched_pairs == 0:
                 if len(self.records) < 2:
@@ -253,6 +277,8 @@ class LianLianKanAutomator:
                     if idx not in used_indices
                 ]
                 print(f"本轮消除 {matched_pairs} 对，剩余记录数: {len(self.records)}")
+                if current_threshold > min_threshold:
+                    current_threshold = max(min_threshold, current_threshold - (threshold_step * 0.5))
 
             round_count += 1
 
@@ -304,13 +330,15 @@ class LianLianKanAutomator:
         return filepath
 
     def click_with_record(self, x: int, y: int,
-                          save_screenshot: bool = True) -> ClickRecord:
+                          save_screenshot: bool = True,
+                          record_click: bool = True) -> Optional[ClickRecord]:
         """
         点击并记录，确保截图位置精确对应
 
         Args:
             x, y: 点击坐标
             save_screenshot: 是否保存截图
+            record_click: 是否记录本次点击
         """
         # 添加随机偏移，使其更自然
         offset_x = random.randint(-2, 2)
@@ -330,6 +358,9 @@ class LianLianKanAutomator:
 
         # 等待图片显示（连连看通常需要一点时间显示图片）
         time.sleep(0.3)
+
+        if not record_click:
+            return None
 
         # 截取点击后的图片 - 使用原始坐标，确保位置精确对应
         screenshot = None
@@ -525,14 +556,30 @@ class LianLianKanAutomator:
         img1_resized = cv2.resize(img1, (96, 96), interpolation=cv2.INTER_AREA)
         img2_resized = cv2.resize(img2, (96, 96), interpolation=cv2.INTER_AREA)
 
+        # 去掉边框干扰（红色框容易造成误判）
+        img1_cropped = img1_resized[6:-6, 6:-6]
+        img2_cropped = img2_resized[6:-6, 6:-6]
+
         # 方法1：感知哈希 (pHash)
-        phash_similarity = self.phash_similarity(img1_resized, img2_resized)
+        phash_similarity = self.phash_similarity(img1_cropped, img2_cropped)
 
         # 方法2：颜色直方图（HSV）比较
-        hist_similarity = self.color_hist_similarity(img1_resized, img2_resized)
+        hist_similarity = self.color_hist_similarity(img1_cropped, img2_cropped)
+
+        # 方法3：模板匹配（灰度相关系数）
+        gray1 = cv2.cvtColor(img1_cropped, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(img2_cropped, cv2.COLOR_BGR2GRAY)
+        template_similarity = cv2.matchTemplate(
+            gray1, gray2, cv2.TM_CCOEFF_NORMED
+        )[0][0]
+        template_similarity = (float(template_similarity) + 1.0) / 2.0
 
         # 加权融合
-        similarity = 0.65 * phash_similarity + 0.35 * hist_similarity
+        similarity = (
+            0.45 * float(template_similarity)
+            + 0.35 * phash_similarity
+            + 0.20 * hist_similarity
+        )
 
         return float(max(0.0, min(1.0, similarity)))
 
