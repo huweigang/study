@@ -554,30 +554,48 @@ class LianLianKanAutomator:
         return "\n".join(report)
 
     def compare_images(self, img1: np.ndarray, img2: np.ndarray) -> float:
-        """比较两张图片的相似度"""
+        """比较两张图片的相似度（包含图案与文字区域）"""
         if img1 is None or img2 is None:
             return 0.0
 
+        icon1, text1 = self.split_image_regions(img1)
+        icon2, text2 = self.split_image_regions(img2)
+
+        icon_similarity = self.compare_visual_region(icon1, icon2)
+        text_similarity = self.compare_text_region(text1, text2)
+
+        # 加权融合：图案为主，文字区域辅助
+        similarity = 0.75 * icon_similarity + 0.25 * text_similarity
+
+        return float(max(0.0, min(1.0, similarity)))
+
+    def split_image_regions(self, img: np.ndarray,
+                            text_ratio: float = 0.25) -> Tuple[np.ndarray, np.ndarray]:
+        """拆分图片为图案区域和文字区域（默认底部25%为文字）"""
+        height, width = img.shape[:2]
+        if height < 4:
+            return img, img
+
+        text_height = max(1, int(height * text_ratio))
+        icon_height = max(1, height - text_height)
+
+        icon_region = img[:icon_height, :width]
+        text_region = img[icon_height:height, :width]
+        return icon_region, text_region
+
+    def compare_visual_region(self, img1: np.ndarray, img2: np.ndarray) -> float:
+        """比较图案区域的相似度"""
         img1_processed = self.preprocess_image(img1)
         img2_processed = self.preprocess_image(img2)
 
-        # 统一尺寸，减少局部噪声影响
         img1_resized = cv2.resize(img1_processed, (96, 96), interpolation=cv2.INTER_AREA)
         img2_resized = cv2.resize(img2_processed, (96, 96), interpolation=cv2.INTER_AREA)
 
-        # 方法1：结构相似度 (SSIM)
         ssim_similarity = self.ssim_similarity(img1_resized, img2_resized)
-
-        # 方法2：感知哈希 (pHash)
         phash_similarity = self.phash_similarity(img1_resized, img2_resized)
-
-        # 方法3：边缘相似度
         edge_similarity = self.edge_similarity(img1_resized, img2_resized)
-
-        # 方法4：颜色直方图（HSV）比较
         hist_similarity = self.color_hist_similarity(img1_resized, img2_resized)
 
-        # 加权融合
         similarity = (
             0.45 * ssim_similarity
             + 0.25 * phash_similarity
@@ -586,6 +604,38 @@ class LianLianKanAutomator:
         )
 
         return float(max(0.0, min(1.0, similarity)))
+
+    def compare_text_region(self, img1: np.ndarray, img2: np.ndarray) -> float:
+        """比较文字区域的相似度（强化笔画差异）"""
+        if img1 is None or img2 is None:
+            return 0.0
+
+        text1 = self.preprocess_text_region(img1)
+        text2 = self.preprocess_text_region(img2)
+
+        text1_resized = cv2.resize(text1, (96, 32), interpolation=cv2.INTER_AREA)
+        text2_resized = cv2.resize(text2, (96, 32), interpolation=cv2.INTER_AREA)
+
+        ssim_similarity = self.ssim_similarity(text1_resized, text2_resized)
+        phash_similarity = self.phash_similarity(text1_resized, text2_resized)
+        edge_similarity = self.edge_similarity(text1_resized, text2_resized)
+
+        similarity = (
+            0.5 * ssim_similarity
+            + 0.3 * phash_similarity
+            + 0.2 * edge_similarity
+        )
+
+        return float(max(0.0, min(1.0, similarity)))
+
+    def preprocess_text_region(self, img: np.ndarray) -> np.ndarray:
+        """文字区域预处理：灰度 + 去噪 + 二值化增强"""
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = np.ones((2, 2), np.uint8)
+        cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        return cv2.cvtColor(cleaned, cv2.COLOR_GRAY2BGR)
 
     def preprocess_image(self, img: np.ndarray) -> np.ndarray:
         """中心裁剪，减少边框与背景干扰"""
