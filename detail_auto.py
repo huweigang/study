@@ -166,7 +166,11 @@ class LianLianKanAutomator:
                               similarity_threshold: float = 0.85,
                               min_threshold: float = 0.75,
                               threshold_step: float = 0.05,
-                              max_rounds: int = 5):
+                              max_rounds: int = 5,
+                              refresh_current_screen: bool = True,
+                              relax_after_match: bool = True,
+                              confirm_removal: bool = True,
+                              removal_similarity_threshold: float = 0.4):
         """
         自动找相同图片并点击消除
         完成一次匹配后会根据剩余未匹配的记录降低阈值继续尝试
@@ -184,7 +188,11 @@ class LianLianKanAutomator:
 
             image_cache: Dict[int, Optional[np.ndarray]] = {}
             for idx, record in enumerate(self.records):
-                if record.screenshot is not None:
+                if refresh_current_screen:
+                    refreshed = self.take_screenshot(record.x, record.y, (80, 80))
+                    image_cache[idx] = refreshed
+                    record.screenshot = refreshed
+                elif record.screenshot is not None:
                     image_cache[idx] = record.screenshot
                 elif record.screenshot_path and os.path.exists(record.screenshot_path):
                     image_cache[idx] = cv2.imread(record.screenshot_path)
@@ -229,6 +237,9 @@ class LianLianKanAutomator:
                     f"({r2.grid_x},{r2.grid_y}) 相似度:{sim:.2f}"
                 )
 
+                before_img1 = self.take_screenshot(r1.x, r1.y, (80, 80)) if confirm_removal else None
+                before_img2 = self.take_screenshot(r2.x, r2.y, (80, 80)) if confirm_removal else None
+
                 # 点击第一张
                 self.click_with_record(r1.x, r1.y, save_screenshot=False, record_click=False)
                 time.sleep(0.15)
@@ -237,9 +248,27 @@ class LianLianKanAutomator:
                 self.click_with_record(r2.x, r2.y, save_screenshot=False, record_click=False)
                 time.sleep(0.3)
 
-                used_indices.add(i)
-                used_indices.add(j)
-                matched_pairs += 1
+                removal_confirmed = True
+                if confirm_removal:
+                    after_img1 = self.take_screenshot(r1.x, r1.y, (80, 80))
+                    after_img2 = self.take_screenshot(r2.x, r2.y, (80, 80))
+                    sim1 = self.compare_images(before_img1, after_img1)
+                    sim2 = self.compare_images(before_img2, after_img2)
+                    removal_confirmed = (
+                        sim1 < removal_similarity_threshold
+                        and sim2 < removal_similarity_threshold
+                    )
+                    print(
+                        f"消除校验: ({r1.grid_x},{r1.grid_y}) 相似度 {sim1:.2f}, "
+                        f"({r2.grid_x},{r2.grid_y}) 相似度 {sim2:.2f}"
+                    )
+
+                if removal_confirmed:
+                    used_indices.add(i)
+                    used_indices.add(j)
+                    matched_pairs += 1
+                else:
+                    print("消除校验失败，保留记录以便后续匹配。")
 
             if matched_pairs == 0:
                 if len(self.records) < 2:
@@ -253,6 +282,9 @@ class LianLianKanAutomator:
                     if idx not in used_indices
                 ]
                 print(f"本轮消除 {matched_pairs} 对，剩余记录数: {len(self.records)}")
+                if relax_after_match and self.records and current_threshold > min_threshold:
+                    current_threshold = max(min_threshold, current_threshold - threshold_step)
+                    print(f"匹配后继续放宽阈值: {current_threshold:.2f}")
 
             round_count += 1
 
@@ -526,20 +558,85 @@ class LianLianKanAutomator:
         if img1 is None or img2 is None:
             return 0.0
 
-        # 统一尺寸，减少局部噪声影响
-        img1_resized = cv2.resize(img1, (96, 96), interpolation=cv2.INTER_AREA)
-        img2_resized = cv2.resize(img2, (96, 96), interpolation=cv2.INTER_AREA)
+        img1_processed = self.preprocess_image(img1)
+        img2_processed = self.preprocess_image(img2)
 
-        # 方法1：感知哈希 (pHash)
+        # 统一尺寸，减少局部噪声影响
+        img1_resized = cv2.resize(img1_processed, (96, 96), interpolation=cv2.INTER_AREA)
+        img2_resized = cv2.resize(img2_processed, (96, 96), interpolation=cv2.INTER_AREA)
+
+        # 方法1：结构相似度 (SSIM)
+        ssim_similarity = self.ssim_similarity(img1_resized, img2_resized)
+
+        # 方法2：感知哈希 (pHash)
         phash_similarity = self.phash_similarity(img1_resized, img2_resized)
 
-        # 方法2：颜色直方图（HSV）比较
+        # 方法3：边缘相似度
+        edge_similarity = self.edge_similarity(img1_resized, img2_resized)
+
+        # 方法4：颜色直方图（HSV）比较
         hist_similarity = self.color_hist_similarity(img1_resized, img2_resized)
 
         # 加权融合
-        similarity = 0.65 * phash_similarity + 0.35 * hist_similarity
+        similarity = (
+            0.45 * ssim_similarity
+            + 0.25 * phash_similarity
+            + 0.2 * edge_similarity
+            + 0.1 * hist_similarity
+        )
 
         return float(max(0.0, min(1.0, similarity)))
+
+    def preprocess_image(self, img: np.ndarray) -> np.ndarray:
+        """中心裁剪，减少边框与背景干扰"""
+        height, width = img.shape[:2]
+        crop_ratio = 0.8
+        crop_w = int(width * crop_ratio)
+        crop_h = int(height * crop_ratio)
+        start_x = max(0, (width - crop_w) // 2)
+        start_y = max(0, (height - crop_h) // 2)
+        return img[start_y:start_y + crop_h, start_x:start_x + crop_w]
+
+    def ssim_similarity(self, img1: np.ndarray, img2: np.ndarray) -> float:
+        """结构相似度 (SSIM)"""
+        gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+
+        gray1 = gray1.astype(np.float32) / 255.0
+        gray2 = gray2.astype(np.float32) / 255.0
+
+        mu1 = cv2.GaussianBlur(gray1, (7, 7), 1.5)
+        mu2 = cv2.GaussianBlur(gray2, (7, 7), 1.5)
+
+        sigma1_sq = cv2.GaussianBlur(gray1 * gray1, (7, 7), 1.5) - mu1 * mu1
+        sigma2_sq = cv2.GaussianBlur(gray2 * gray2, (7, 7), 1.5) - mu2 * mu2
+        sigma12 = cv2.GaussianBlur(gray1 * gray2, (7, 7), 1.5) - mu1 * mu2
+
+        c1 = 0.01 ** 2
+        c2 = 0.03 ** 2
+
+        numerator = (2 * mu1 * mu2 + c1) * (2 * sigma12 + c2)
+        denominator = (mu1 * mu1 + mu2 * mu2 + c1) * (sigma1_sq + sigma2_sq + c2)
+        ssim_map = numerator / (denominator + 1e-8)
+        return float(np.mean(ssim_map))
+
+    def edge_similarity(self, img1: np.ndarray, img2: np.ndarray) -> float:
+        """边缘相似度"""
+        gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+
+        edges1 = cv2.Canny(gray1, 80, 160)
+        edges2 = cv2.Canny(gray2, 80, 160)
+
+        vec1 = edges1.flatten().astype(np.float32)
+        vec2 = edges2.flatten().astype(np.float32)
+        norm1 = np.linalg.norm(vec1)
+        norm2 = np.linalg.norm(vec2)
+        if norm1 == 0.0 and norm2 == 0.0:
+            return 1.0
+        if norm1 == 0.0 or norm2 == 0.0:
+            return 0.0
+        return float(np.dot(vec1, vec2) / (norm1 * norm2))
 
     def phash_similarity(self, img1: np.ndarray, img2: np.ndarray) -> float:
         """基于感知哈希的相似度"""
