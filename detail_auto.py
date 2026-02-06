@@ -45,6 +45,7 @@ class LianLianKanAutomator:
         self.grid_rows = None  # 网格行数
         self.grid_cols = None  # 网格列数
         self.hotkey_ids = []
+        self._finalized = False
 
         # 创建保存目录
         os.makedirs(self.save_dir, exist_ok=True)
@@ -167,7 +168,7 @@ class LianLianKanAutomator:
                               min_threshold: float = 0.75,
                               threshold_step: float = 0.05,
                               max_rounds: int = 5,
-                              refresh_current_screen: bool = True,
+                              refresh_current_screen: bool = False,
                               relax_after_match: bool = True,
                               confirm_removal: bool = True,
                               removal_similarity_threshold: float = 0.4):
@@ -191,7 +192,6 @@ class LianLianKanAutomator:
                 if refresh_current_screen:
                     refreshed = self.take_screenshot(record.x, record.y, (80, 80))
                     image_cache[idx] = refreshed
-                    record.screenshot = refreshed
                 elif record.screenshot is not None:
                     image_cache[idx] = record.screenshot
                 elif record.screenshot_path and os.path.exists(record.screenshot_path):
@@ -803,6 +803,7 @@ class LianLianKanAutomator:
             print("已经在运行中")
             return
 
+        self._finalized = False
         self.is_running = True
         self.is_paused = False
 
@@ -826,7 +827,7 @@ class LianLianKanAutomator:
         except Exception as e:
             print(f"发生错误: {e}")
         finally:
-            self.stop()
+            self.stop(finalize=True)
 
     def keyboard_listener(self):
         """键盘监听器"""
@@ -863,11 +864,24 @@ class LianLianKanAutomator:
         status = "暂停" if self.is_paused else "继续"
         print(f"{status}...")
 
-    def stop(self):
-        """停止程序"""
+    def stop(self, finalize: bool = False):
+        """停止程序
+
+        Args:
+            finalize: 是否执行收尾动作（保存记录、汇总和匹配）
+        """
         self.is_running = False
         print("程序已停止")
         self.clear_hotkeys()
+
+        if finalize:
+            self.finalize_run()
+
+    def finalize_run(self):
+        """在自动流程结束后执行一次性收尾动作"""
+        if self._finalized:
+            return
+        self._finalized = True
 
         # 保存记录
         if self.records:
