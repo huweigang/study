@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>麻将对局界面高还原示例</title>
+  <style>
+    :root {
+      --gold: #f5ca76;
+      --panel: rgba(13, 15, 22, 0.66);
+      --tile-bg: #f1ece2;
+      --felt-light: #1d8665;
+      --felt-dark: #0d5e4b;
+      --wood-1: #5d301e;
+      --wood-2: #8f522f;
+      --wood-3: #3d2114;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 15% 12%, #203250 0%, transparent 34%),
+        radial-gradient(circle at 85% 86%, #1b263f 0%, transparent 33%),
+        #070d1a;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #fff;
+      padding: 20px;
+    }
+
+    .board {
+      width: min(1360px, 100vw - 24px);
+      aspect-ratio: 16 / 9;
+      border-radius: 26px;
+      padding: 18px;
+      position: relative;
+      background: linear-gradient(140deg, var(--wood-1), var(--wood-2) 55%, var(--wood-3));
+      box-shadow: 0 26px 60px rgba(0, 0, 0, .6), inset 0 0 0 2px rgba(255, 200, 120, .22);
+      overflow: hidden;
+    }
+
+    .table {
+      width: 100%;
+      height: 100%;
+      border-radius: 20px;
+      position: relative;
+      background:
+        radial-gradient(circle at 52% 32%, var(--felt-light), var(--felt-dark) 70%),
+        linear-gradient(180deg, #167255, #0a4f3f);
+      box-shadow: inset 0 0 65px rgba(0, 0, 0, .58);
+    }
+
+    .status {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      padding: 14px 18px;
+      border-radius: 16px;
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, .1);
+      line-height: 1.35;
+      font-weight: 700;
+      color: #f4b35d;
+      font-size: 36px;
+      text-shadow: 0 2px 6px rgba(0, 0, 0, .5);
+    }
+
+    .status span {
+      display: block;
+      color: #c8a78a;
+      margin-top: 8px;
+      font-size: 29px;
+      font-weight: 600;
+    }
+
+    .corner-actions {
+      position: absolute;
+      top: 14px;
+      right: 16px;
+      display: flex;
+      gap: 12px;
+    }
+
+    .icon-btn {
+      width: 68px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 235, 180, .3);
+      background: radial-gradient(circle at 35% 30%, #50453d, #251f1b 68%);
+      color: #dcbc7f;
+      font-size: 36px;
+      display: grid;
+      place-items: center;
+      box-shadow: inset 0 0 10px rgba(255, 221, 141, .2), 0 8px 14px rgba(0, 0, 0, .35);
+    }
+
+    .player {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, .12);
+      background: rgba(5, 8, 13, .68);
+      min-width: 235px;
+    }
+
+    .avatar {
+      width: 58px;
+      height: 58px;
+      border-radius: 12px;
+      background: linear-gradient(145deg, #f6f8fc, #9bb2cb);
+      color: #2f3d58;
+      font-size: 30px;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      border: 2px solid rgba(255, 255, 255, .55);
+    }
+
+    .meta { font-size: 34px; font-weight: 700; }
+    .coin {
+      display: block;
+      margin-top: 3px;
+      color: #f5bf57;
+      font-size: 42px;
+      font-weight: 800;
+    }
+
+    .north { top: 10px; left: 50%; transform: translateX(-50%); }
+    .west { top: 50%; left: 12px; transform: translateY(-50%); }
+    .east { top: 50%; right: 12px; transform: translateY(-50%); }
+    .self {
+      left: 16px;
+      bottom: 96px;
+      border: 2px solid #ffcc4d;
+      box-shadow: 0 0 18px rgba(255, 208, 88, .55);
+    }
+
+    .wall {
+      position: absolute;
+      display: flex;
+      gap: 3px;
+      filter: drop-shadow(0 2px 3px rgba(0,0,0,.35));
+    }
+
+    .wall.top { top: 128px; left: 50%; transform: translateX(-50%); }
+    .wall.left { left: 176px; top: 52%; transform: translateY(-50%) rotate(-90deg); }
+    .wall.right { right: 176px; top: 52%; transform: translateY(-50%) rotate(90deg); }
+
+    .back {
+      width: 46px;
+      height: 62px;
+      border-radius: 7px;
+      background: linear-gradient(180deg, #8dcd52, #4f9f28);
+      border: 1px solid rgba(255, 255, 255, .34);
+    }
+
+    .discard {
+      position: absolute;
+      display: flex;
+      gap: 6px;
+    }
+
+    .discard.top { top: 302px; left: 50%; transform: translateX(-50%); }
+    .discard.left { top: 52%; left: 510px; transform: translateY(-50%) rotate(-90deg); }
+    .discard.right { top: 52%; right: 488px; transform: translateY(-50%) rotate(90deg); }
+
+    .tile {
+      width: 55px;
+      height: 74px;
+      border-radius: 9px;
+      border: 1px solid #d6d0c2;
+      background: var(--tile-bg);
+      box-shadow: 0 4px 8px rgba(0,0,0,.3);
+      color: #1f1f1f;
+      font-size: 34px;
+      font-weight: 800;
+      display: grid;
+      place-items: center;
+    }
+
+    .center {
+      position: absolute;
+      left: 50%;
+      top: 51%;
+      transform: translate(-50%, -50%);
+      width: 316px;
+      height: 210px;
+      border-radius: 30px;
+      background: linear-gradient(180deg, #2f343d, #11151b);
+      border: 2px solid #575d66;
+      box-shadow: inset 0 0 16px rgba(0,0,0,.8), 0 8px 20px rgba(0,0,0,.5);
+      text-align: center;
+      display: grid;
+      align-content: center;
+      gap: 6px;
+    }
+
+    .center .round { font-size: 44px; color: #b79a63; font-weight: 700; }
+    .center .remain { font-size: 84px; color: #46c2ff; font-weight: 900; line-height: 1; }
+    .center .count { font-size: 38px; color: #d6b574; font-weight: 700; }
+
+    .turn-tip {
+      position: absolute;
+      left: 340px;
+      bottom: 162px;
+      font-size: 44px;
+      color: #f7d05e;
+      font-weight: 800;
+      text-shadow: 0 2px 8px rgba(0,0,0,.5);
+    }
+
+    .actions {
+      position: absolute;
+      left: 50%;
+      bottom: 106px;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 16px;
+    }
+
+    .act {
+      width: 176px;
+      height: 88px;
+      border: none;
+      border-radius: 18px;
+      color: white;
+      font-size: 58px;
+      font-weight: 900;
+      text-shadow: 0 2px 3px rgba(0,0,0,.35);
+      box-shadow: 0 10px 20px rgba(0,0,0,.33), inset 0 0 0 2px rgba(255,255,255,.26);
+    }
+
+    .hu { background: linear-gradient(180deg, #ff6554, #ca2719); }
+    .peng { background: linear-gradient(180deg, #ffbf42, #d47b00); }
+    .gang { background: linear-gradient(180deg, #61d56f, #1f9f30); }
+    .pass { background: linear-gradient(180deg, #49b6ff, #146dbf); }
+
+    .hand {
+      position: absolute;
+      left: 50%;
+      bottom: 10px;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 2px;
+      padding: 8px;
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(255, 224, 106, .44), rgba(255, 224, 106, .14));
+      box-shadow: 0 0 20px rgba(255, 213, 83, .5);
+    }
+
+    .hand .tile {
+      width: 82px;
+      height: 120px;
+      font-size: 50px;
+    }
+
+    .hand .tile.selected {
+      transform: translateY(-42px);
+      box-shadow: 0 0 0 3px rgba(255, 218, 96, .95), 0 14px 22px rgba(0,0,0,.4);
+    }
+
+    .left-arrow {
+      position: absolute;
+      left: 18px;
+      bottom: 260px;
+      width: 54px;
+      height: 90px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.32);
+      border: 1px solid rgba(255,255,255,.2);
+      display: grid;
+      place-items: center;
+      font-size: 58px;
+      color: #d5ab69;
+    }
+
+    @media (max-width: 1200px) {
+      .status { font-size: 24px; }
+      .status span { font-size: 20px; }
+      .meta { font-size: 24px; }
+      .coin { font-size: 28px; }
+      .tile { width: 44px; height: 62px; font-size: 28px; }
+      .hand .tile { width: 58px; height: 92px; font-size: 38px; }
+      .act { width: 118px; height: 64px; font-size: 40px; }
+      .turn-tip { font-size: 30px; left: 300px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="board">
+    <div class="table">
+      <div class="status">血流成河 · 底分 100<span>房间号：888888</span></div>
+
+      <div class="corner-actions">
+        <div class="icon-btn">?</div>
+        <div class="icon-btn">⚙</div>
+        <div class="icon-btn">↩</div>
+      </div>
+
+      <div class="player north"><div class="avatar">北</div><div class="meta">风徐来<span class="coin">25,600</span></div></div>
+      <div class="player west"><div class="avatar">西</div><div class="meta">明月几时有<span class="coin">18,400</span></div></div>
+      <div class="player east"><div class="avatar">东</div><div class="meta">南山南<span class="coin">31,200</span></div></div>
+      <div class="player self"><div class="avatar">南</div><div class="meta">你<span class="coin">28,800</span></div></div>
+
+      <div class="wall top" id="wallTop"></div>
+      <div class="wall left" id="wallLeft"></div>
+      <div class="wall right" id="wallRight"></div>
+
+      <div class="discard top">
+        <div class="tile">🀇</div><div class="tile">🀅</div><div class="tile">🀜</div><div class="tile">🀝</div><div class="tile">🀙</div>
+      </div>
+      <div class="discard left">
+        <div class="tile">🀄</div><div class="tile">🀈</div><div class="tile">🀋</div><div class="tile">🀁</div>
+      </div>
+      <div class="discard right">
+        <div class="tile">🀂</div><div class="tile">🀉</div><div class="tile">🀜</div><div class="tile">🀞</div>
+      </div>
+
+      <div class="center">
+        <div class="round">东风圈</div>
+        <div class="remain">08</div>
+        <div class="count">剩 52 张</div>
+      </div>
+
+      <div class="turn-tip">轮到你出牌 ➜</div>
+      <div class="actions">
+        <button class="act hu">胡</button>
+        <button class="act peng">碰</button>
+        <button class="act gang">杠</button>
+        <button class="act pass">过</button>
+      </div>
+
+      <div class="left-arrow">›</div>
+      <div class="hand" id="hand"></div>
+    </div>
+  </div>
+
+  <script>
+    const createWall = (id, count) => {
+      const wrap = document.getElementById(id);
+      for (let i = 0; i < count; i += 1) {
+        const el = document.createElement('div');
+        el.className = 'back';
+        wrap.appendChild(el);
+      }
+    };
+
+    createWall('wallTop', 16);
+    createWall('wallLeft', 15);
+    createWall('wallRight', 15);
+
+    const tiles = ['二万', '三万', '五万', '六万', '七万', '八万', '九万', '九万', '二筒', '四筒', '六条', '东', '南', '发'];
+    const hand = document.getElementById('hand');
+
+    tiles.forEach((text, i) => {
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'tile';
+      tile.textContent = text;
+      if (i === 10) tile.classList.add('selected');
+      tile.addEventListener('click', () => {
+        document.querySelectorAll('.hand .tile').forEach(t => t.classList.remove('selected'));
+        tile.classList.add('selected');
+      });
+      hand.appendChild(tile);
+    });
+  </script>
+</body>
+</html>
